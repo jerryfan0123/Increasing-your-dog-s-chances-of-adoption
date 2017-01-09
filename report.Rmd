@@ -1,0 +1,406 @@
+---
+title: "Increasing Chances of Adoption"
+author: "Jerry (Jia Hui) Fan"
+date: "December 10, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, cache = TRUE, warning=FALSE)
+```
+
+```{r}
+library(haven)
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(knitr)
+library(readxl)
+library(readr)
+library(stats)
+library(stringr)
+library(car)
+library(MASS)
+library(leaflet)
+```
+
+##Introduction
+
+Parting ways with our furry companions is very painful, but circumstances, such as moving, maintenance costs, or inadequate facilities, often force us to make this difficult decision. Every year, thousands of dog owners in Los Angeles give up their pets to animal shelters with the hope that their dogs will find a new and loving home. However, this is not the reality for many dogs. Because the number of dogs entering shelters greatly outweigh the number of adoptions, shelters are forced to euthanize roughly 40% of surrendered dogs.
+
+In this investigation, we will analyze LA animal shelter data to determine variables that affect a surrendered dog's chances of adoption. The findings in this report will not only allow dog owners to better understand the fates of their companions, but also offer advice on how to improve the likelihood of adoption for their furry friends.
+
+##Data
+
+###Cleaning
+The original data set catalogs every animal from the six animal shelters in the LA region from mid 2009 to mid 2013. It contains over 113,000 entries with a myriad of information ranging from the animal's breed to microchip status. However, one of the shelters, North East, closed in 2011 so we will omit observations from that shelter to make the data more relevant. In addition, our investigation focuses on dogs so we subset our data to exclude cats. We will work with the modified data set of 66,178 entries, to find patterns in the likelihood of adoption for surrendered dogs. 
+
+After subsetting, we will also omit certain variables such as Name, Zip, and S.N Date and introduce the new variables Intake Month, Intake Year, Outcome Month, Outcome Year, and Time In Shelter. In addition, we notice that there are sometimes multiple names for each of the breeds. For instance, German Shepherds have been logged as both GERMAN SHEP and GERM SHEPHERD. Thus, we will manually change the breed names to rectify this issue.
+
+```{r}
+#the original data
+load("C:/Users/Admin/Desktop/data project/animal shelters/lashelterdata.rda")
+
+#select relevant variables
+filtered_data <- dplyr::select(lashelters, Species, Primary.Breed, Sex, DOB, Intake.Date, Intake.Type, Microchip.Status, Shelter, Outcome.Date, OutCatg)
+
+#Rename variables
+colnames(filtered_data)[which(colnames(filtered_data) %in% c("Primary.Breed", "Microchip.Status", "OutCatg"))] <- c("Breed", "MircochipStatus", "Outcome")
+
+#we will focus on dogs that have already been processed(they have been euthanized, adopted, etc and are no longer at the shelter)
+filtered_data <- subset(filtered_data, filtered_data$Outcome != "INVENTORY")
+filtered_data <- subset(filtered_data, filtered_data$Species == "DOG")
+
+#in addition one of the shelters N EAST seems to have closed since they do have have data past 2011 so we will also exclude that shelter
+filtered_data <- subset(filtered_data, filtered_data$Shelter != "N EAST")
+
+#Reclass variables
+filtered_data$DOB <- as.Date(filtered_data$DOB)
+filtered_data$Intake.Date <- as.Date(filtered_data$Intake.Date)
+filtered_data$Outcome.Date <- as.Date(filtered_data$Outcome.Date)
+
+#add a new variable called TimeInShelter to indicate how long the dog stayed at the shelter
+filtered_data <- mutate(filtered_data, TimeInShelter = as.numeric(difftime(Outcome.Date, Intake.Date, units = "days")))
+
+#add in month and year of intake and outcome
+filtered_data <- mutate(filtered_data, Outcome.Month = months(Outcome.Date), Intake.Month = months(Intake.Date), Outcome.Year = as.numeric(format(filtered_data$Outcome.Date, '%Y')), Intake.Year = as.numeric(format(filtered_data$Intake.Date, '%Y')))
+
+#many dog breeds have different spellings so we also have to correct for that, we will only check this for the top breeds, there are simply too many to do this for every breed especially considering some breeds are very rare
+#note that in the data all characters end with a space so we will keep this convention in renaming
+
+filtered_data$Breed <- sapply(filtered_data$Breed, str_to_title)
+
+filtered_data$Breed[filtered_data$Breed == "Germ Sh Point " | filtered_data$Breed == "Germ Shepherd " | filtered_data$Breed == "Germ Wh Point " | filtered_data$Breed == "German Shep "] <- "German Shepherd "
+
+filtered_data$Breed[filtered_data$Breed == "Chihuahua Lh " | filtered_data$Breed == "Chihuahua Sh " |filtered_data$Breed == "Smth Chihua "] <- "Chihuahua "
+
+filtered_data$Breed[filtered_data$Breed == "Labrador Ret " | filtered_data$Breed == "Labrador Retr "] <- "Labrador Retriever "
+
+filtered_data$Breed[filtered_data$Breed == "Am Staf Terr " | filtered_data$Breed == "American Staff "] <- "American Staffordshire Terrier "
+
+filtered_data$Breed[filtered_data$Breed == "Terrier X "] <- "Terrier Mix "
+
+filtered_data$Breed[filtered_data$Breed == "Poodle Stnd " | filtered_data$Breed == "Poodle Toy " | filtered_data$Breed == "Poodle Min "] <- "Poodle "
+
+filtered_data$Breed[filtered_data$Breed == "Dachshund Lh " | filtered_data$Breed == "Dachshund Smh " | filtered_data$Breed == "Dachshund Wh "] <- "Dachshund "
+
+filtered_data$Breed[filtered_data$Breed == "Cocker Span "] <- "Cocker Spaniel "
+
+filtered_data$Breed[filtered_data$Breed == "Am Pit Bull Ter "] <- "American Pit Bull Terrier "
+
+filtered_data$Breed[filtered_data$Breed == "Jack Russ Terr "] <- "Jack Russel Terrier"
+
+#new data set for dogs that were surrendered
+filtered_data_owner_sur <- subset(filtered_data, filtered_data$Intake.Type == "OWNER SUR")
+```
+
+###Summarize
+
+```{r fig.width = 6, fig.height = 4}
+#find number of NA values for breed
+n_breed_NA <- sum(is.na(filtered_data$Breed))
+#find number of non-NA values for breed
+n_breed_nonNA <- sum(!is.na(filtered_data$Breed))
+
+#subset data for each shelter
+Harbor <- Harbor <- subset(filtered_data, filtered_data$Shelter == "HARBOR")
+N_Central <- subset(filtered_data, filtered_data$Shelter == "N CENTRA")
+E_Valley <- subset(filtered_data, filtered_data$Shelter == "E VALLEY")
+S_LA <- subset(filtered_data, filtered_data$Shelter == "S LA")
+W_Valley <- subset(filtered_data, filtered_data$Shelter == "W VALLEY")
+Annex <- subset(filtered_data, filtered_data$Shelter == "ANNEX")
+W_LA <- subset(filtered_data, filtered_data$Shelter == "W LA")
+```
+
+To better understand the data, let's first find the  most popular dog breeds in the LA shelters. Of the 66,178 dogs listed, 40,118 are missing breed information. A missing breed value can suggest that the dog's breed was unidentifiable, perhaps because it is too exotic. If this was the case, then the large number of missing values can bias our data because we will only have breed information for dogs with easily identifiable breeds. However, considering that the data set contains over 200 unique breeds, it is unlikely that over 2/3 of the dogs had unidentifiable breeds. Instead, the missing values are likely due to systematic shortcomings during animal processing. We will assume that the breed distribution of the observations with breed information is representative of the entire data set, including the portion of observations with NA breed values. For example, if we find that 1/10 of the dogs with breed information are Poodles, we will assume that 1/10 of all the dogs admitted to LA shelters are Poodles.
+
+Using the 26,060 entries with breed information, we can find the most popular breeds in LA shelters. Table 1 summarizes the top 15 breeds with their respective counts and percentages. By our previous assumption we can expect that that these percentages are reflective of LA shelters as a whole. From Table 1, we can see that despite the large number of breeds present in the shelters, over 60% belong to only 15 breeds. In addition, we observe that Chihuahuas, German Shepherds, and Labrador Retrievers are not only the three most popular breeds but also account for over 30% of the dogs at shelters.
+
+```{r}
+#find top breeds along with their counts
+top_15_breeds <- filter(filtered_data, !is.na(filtered_data$Breed)) %>% 
+  group_by(Breed) %>%
+  summarize(BreedCount = n()) %>%
+  top_n(15) %>%
+  arrange(desc(BreedCount))
+
+top_15_breeds <- mutate(top_15_breeds, Percent = round(100 * top_15_breeds$BreedCount/26060, 1))
+
+kable(top_15_breeds, caption = "Table 1. Most Popular Breeds")
+```
+
+```{r}
+mean_shelter_time_sur <- mean(filtered_data_owner_sur$TimeInShelter)
+median_shelter_time_sur <- median(filtered_data_owner_sur$TimeInShelter)
+stdv <- round(sd(filtered_data_owner_sur$TimeInShelter), digits = 2)
+iqr <- IQR(filtered_data_owner_sur$TimeInShelter)
+```
+
+
+Next, we want to better understand how long surrendered dogs spend in the shelters. To do so, we can plot a histogram to determine the distribution of this statistic. From Figure 1, we notice that the distribution is heavily right skewed with an average (median) of only  `r median_shelter_time_sur ` days. The standard deviation of the data is `r stdv` and the interquartile range is only `r 15`. This suggests that the number of days spent in shelters varies considerably. Though it is possible for surrendered dogs to stay at the shelter for a long period, it is very likely that their future will be decided days after their arrival.
+
+```{r}
+#plot distrubition of length of stay for surrendered dogs
+ggplot() +
+  geom_histogram(data = filtered_data_owner_sur, aes(x = TimeInShelter, y = ..count../15892), binwidth = 4, color = "white", fill = "#56B4E9") + 
+  labs(title = "Number of Days Spent in Shelter for Surrendered Dogs", x = "Days", y = "Density", caption  = "Figure 1 plots the distribution of days that surrendered dogs stay at shelters. Each bin spans four days and \nthe dashed vertical line represents the median.") + 
+  coord_cartesian(xlim = c(0,100), ylim = c(0,0.35)) +
+  geom_vline(xintercept = median_shelter_time_sur, color = "black", linetype = "dashed") +
+  scale_x_continuous(breaks = c(seq(0, 100, 20), median_shelter_time_sur)) +
+  scale_y_continuous(breaks = c(seq(0,0.35, 0.05))) +
+  theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+```
+
+What then are the futures of surrendered dogs? Figure 2a plots the outcomes for surrendered dogs. In this figure, we see that the majority of dogs are either adopted, euthanized, or transferred. However, transferred  dogs still remain in the shelter system and will eventually leave via the other outcomes: adoption, euthanasia, RTO (returned to owner), foster. Thus, transfer is not a final outcome and does not provide information on the fate of the dogs. To properly understand the futures of shelter dogs, we subset the data to exclude dogs with the transfer outcome, which Figure 2b plots. Doing so, we find that 53% of surrendered dogs are adopted and, alarmingly, around 43% of surrendered dogs are euthanized. Unfortunately, this is the harsh reality that dogs face when they are surrendered to animal shelters.  
+
+```{r fig.width = 4, fig.height = 4}
+par(mfrow=c(1,2))
+
+#Bar graphs of outcomes
+ggplot(filtered_data_owner_sur) + 
+  geom_bar(aes(x = Outcome, y = ..count../sum(..count..)), fill="#56B4E9", width = 0.7) +
+    scale_x_discrete(limits=c("ADOPTION", "EUTHANASIA", "TRANSFER", "RTO", "FOSTER"), labels = c("Adoption", "Euthanasia", "Transfer", "RTO", "Foster")) +
+  coord_cartesian(ylim = c(0,0.6)) +
+  scale_y_continuous(breaks = c(seq(0, 0.6, 0.1))) +
+  labs(title = "Futures for Surrendered Dogs", y = "Density", caption = "Figure 2a plots the density of each outcome including \nTransfers. RTO stands for returned to owner.") +
+  theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+
+ggplot(subset(filtered_data_owner_sur, filtered_data_owner_sur$Outcome != "TRANSFER")) + 
+  geom_bar(aes(x = Outcome, y = ..count../sum(..count..)), fill="#56B4E9", width = 0.6) +
+  scale_x_discrete(limits=c("ADOPTION", "EUTHANASIA", "RTO", "FOSTER"), labels = c("Adoption", "Euthanasia", "RTO", "Foster")) +
+  coord_cartesian(ylim = c(0,0.6)) +
+  scale_y_continuous(breaks = c(seq(0, 0.6, 0.1))) +
+  labs(y = "", caption = "Figure 2b plots the density of each outcome excluding \nTransfers.") +
+  theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+```
+
+##Analysis 
+
+###Effect of Breed on Adoption Rate
+
+A common question that many dog owners ask is: will my dog's breed affect its chances of adoption? First, we plot the adoption rates for each of the top 15 breeds (found in Table 1). Based on the following figure, we can see that the adoption rates vary greatly depending on the breed. In fact, the difference between the highest rate and lowest rate is over 60%! We also notice that the top 7 adoption rates come from small dogs such as the Maltese, Beagle, and Chihuahua (while Terrier Mixes vary in size, most of the larger mixes have specific breed designations).
+
+```{r}
+ #subset data for top breeds
+filtered_data_top <- subset(filtered_data, filtered_data$Outcome %in% c("EUTHANASIA", "ADOPTION") & filtered_data$Breed %in% top_15_breeds$Breed)
+
+#create breed and outcome table
+ctable <- table(filtered_data_top$Breed, filtered_data_top$Outcome) 
+
+#add new variable, percent.adopted, to table
+contingency_table <- as.data.frame.matrix(ctable)
+contingency_table <- mutate(contingency_table, Breed = row.names(contingency_table), Percent.Adopted = 100 * ADOPTION/(ADOPTION + EUTHANASIA)) #add new variable
+contingency_table <- contingency_table[,c(3, 1, 2, 4)]
+contingency_table <- contingency_table[order(contingency_table$Percent.Adopted) ,]
+
+#plot
+ggplot(contingency_table) +
+  geom_col(aes(x = Breed, y = Percent.Adopted)) +
+  scale_x_discrete(limits = contingency_table$Breed) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  labs(title = "Adoption Rates by Breed", y = "Percent", caption = "Figure 3 plots the adoption rates for each of the top 15 breeds for owner surrendered dogs. The x axis has been arranged in ascending \norder based on percentage and is not the same order as found in Table 1.")
+```
+
+Though the likelihood of adoption appears to depend on the breed, we need to confirm that this pattern is statistically significan. We perform a one-way chi-square test with null and alternative hypotheses:
+
+$H_0:$ The breed and adoption rate are independent (the adoption rates are the same for all breeds).
+
+$H_a:$ The breed and adoption rate are dependent (the adoption rates are not the same for all breeds).
+
+```{r}
+#chi-square test
+ctable_unnamed <- table(filtered_data_top$Breed, filtered_data_top$Outcome)
+chisq.test(ctable_unnamed)
+```
+
+The p-value is essentially 0! This means that if breed and adoption rate were actually independent it would be nearly impossible to observe such a pattern. Thus, we reject the null and conclude that for surrendered dogs, the adoption rate does depend on the breed.
+
+This observed discrepancy between adoption rates for large and small dogs is likely due to two reasons. First, many of the larger breeds in Figure 3 are prone to health issues. For instance, breeds such as the American Pit Bull Terrier, Pit Bull and Rottweilers are often classified as high risk when it comes to health concerns. Since shelters have limited resources, they cannot treat every dog's diseases and must often resort to euthanasia. In addition, the health concerns might deter adopters from these breeds. Another factor that can explain the observed pattern is that the demand for smaller dogs in LA is simply higher than that for larger ones.
+
+Dog owners seeking to surrender their pets should seriously consider the information in Figure 3 when making their decisions. If your dog belongs to one of the bottom breeds, the harsh reality is that your furry friend will likely not find another home. To prevent such a fate, you should perhaps consider alternatives such as giving your dog to a friend or listing him/her on the internet. If on the other hand, your dog belongs to one of the top breeds, the shelter system, though not ideal, can still be very beneficial to your pet.
+
+###When to Surrender Your Dog
+
+Let us now turn our attention to how the number of intakes, euthanaias, and adoptions vary throughout the year for shelter dogs. Our data spans roughly four years from mid 2009 to mid 2013, but only  2010, 2011, and 2012 contain all 12 months so we will use these years in our analysis. The pattern in number of dogs taken in, adopted, and euthanized per month is very similar for 2010, 2011, and 2012 so we aggregated the data from these three years to produce Figure 4, which plots the number of dogs taken into shelters, adopted, and euthanized by month. 
+
+```{r fig.width = 10, fig.height = 6}
+#our data for 2009 and 2013 is incomplete compared to the other months so we will consider 2010, 2011, 2012 for this analysis
+
+#monthly intake rates for all dogs
+a <- subset(filtered_data, filtered_data$Intake.Year %in% c(2010, 2011, 2012))
+
+#monthly euthanasia and adoption rates for surrendered pets
+b <- subset(filtered_data_owner_sur, filtered_data_owner_sur$Outcome.Year %in% c(2010, 2011, 2012) & filtered_data_owner_sur$Outcome == "EUTHANASIA")
+c <- subset(filtered_data_owner_sur, filtered_data_owner_sur$Outcome.Year %in% c(2010, 2011, 2012) & filtered_data_owner_sur$Outcome == "ADOPTION")
+d <- rbind(b, c)
+
+#monthly euthanasian and adoption rates for all pets
+bb <- subset(filtered_data, filtered_data$Outcome.Year %in% c(2010, 2011, 2012) & filtered_data$Outcome == "EUTHANASIA")
+cc <- subset(filtered_data, filtered_data$Outcome.Year %in% c(2010, 2011, 2012) & filtered_data$Outcome == "ADOPTION")
+dd <- rbind(bb, cc)
+
+#to create a legend I needed to add a new dummy variable to fill by called Intake
+a<- mutate(a, Intake = "INTAKE")
+
+ggplot() +
+  geom_bar(data = a, mapping = aes(x = Intake.Month, y = ..count.., fill = Intake)) +
+  geom_bar(data = dd, mapping = aes(x = Outcome.Month, y = ..count.., fill = Outcome), position = "dodge") +
+  scale_x_discrete(limits = month.name) +
+  scale_fill_manual(values = c("#56B4E9", "indianred1", "#999999")) +
+  labs(fill = "", title = "Distribution of Intake, Adoption, and Euthanasia by Month From 2010-2012", y = "Count", x = "Month", caption = "Figure 4 plots the number of dogs taken into shelters, euthanized, and adopted for each of the 12 months. Note that each bin combines the monthly frequencies for 2010, 2011, and 2012.") +
+  theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+```
+
+One of the salient patterns in Figure 4 is the elevated number of intakes during the summer and early autumn months. To determine whether the observed pattern in the monthly frequencies is significant, or simply due to chance, we conduct a one-way chi-square test. The null and alternative hypotheses respectively are:
+
+$H_0:$ The number of intakes is independent of the month (all monthly frequencies are equal).
+
+$H_a:$ The number of intakes is dependent on the month (monthly frequencies are not equal).
+
+```{r}
+ct <- table(a$Intake.Month) #frequncy table
+chisq.test(ct) #chi-squared test
+```
+
+The chi-square test returns a p-value of essentially 0 so we reject the null and conclude that the pattern we see in the data is indeed significant. 
+
+We also observe a similar pattern in the Euthanasia counts; as the summer months begin, the monthly frequencies of euthanasia increase and remain high until early autumn. In fact, for most months, if the intake frequency increases, the euthanasia frequency also increases, and vice versa. Thus, we suspect that there is a correlation between the number of monthly intakes and the number of monthly euthanasias. However, we are more interested in how the percentage of dogs that are euthanized each month is related to the monthly intake count.
+
+We plot the monthly euthanasia percentages and intake counts for the three years and observe that there appears to a be a linear relationship. Using the number of monthly intakes as a predictor, we can perform simple linear regression to determine this relationship. The summary statistics of our initial model showed that there were two bad leverage points. To produce a better model, we ommitted these two points and conducted a second linear regression to produce a final model. Figure 5 plots the data along with the final linear model. The summary statistics and summary plots of the final model are  shown below Figure 5.
+
+```{r}
+intake_month_count_10 <- filtered_data %>% 
+  subset(filtered_data$Intake.Year == 2010) %>% 
+  group_by(Intake.Month) %>% 
+  count()
+intake_month_count_11 <- filtered_data %>% 
+  subset(filtered_data$Intake.Year == 2011) %>% 
+  group_by(Intake.Month) %>% 
+  count()
+intake_month_count_12 <- filtered_data %>% 
+  subset(filtered_data$Intake.Year == 2012) %>% 
+  group_by(Intake.Month) %>% 
+  count()
+
+intake_month_count <- c(intake_month_count_10[[2]], intake_month_count_11[[2]], intake_month_count_12[[2]])
+```
+
+```{r}
+e <- subset(filtered_data_owner_sur, filtered_data_owner_sur$Outcome.Year %in% c(2010, 2011, 2012))
+```
+```{r}
+euthanasia_month_count_10 <- b %>% 
+  subset(b$Outcome.Year == 2010) %>% 
+  group_by(Outcome.Month) %>% 
+  count()
+euthanasia_month_count_11 <- b %>% 
+  subset(b$Outcome.Year == 2011) %>% 
+  group_by(Outcome.Month) %>% 
+  count()
+euthanasia_month_count_12 <- b %>% 
+  subset(b$Outcome.Year == 2012) %>% 
+  group_by(Outcome.Month) %>% 
+  count()
+```
+
+```{r}
+euthanasia_month_count <- c(euthanasia_month_count_10[[2]], euthanasia_month_count_11[[2]], euthanasia_month_count_12[[2]])
+years <- c(rep(2010, 12), rep(2011, 12), rep(2012, 12))
+```
+
+```{r}
+outcome_month_count_10 <- e %>% 
+  subset(e$Outcome.Year == 2010) %>% 
+  group_by(Outcome.Month) %>% 
+  count()
+outcome_month_count_11 <- e %>% 
+  subset(e$Outcome.Year == 2011) %>% 
+  group_by(Outcome.Month) %>% 
+  count()
+outcome_month_count_12 <- e %>% 
+  subset(e$Outcome.Year == 2012) %>% 
+  group_by(Outcome.Month) %>% 
+  count()
+
+outcome_month_count <- c(outcome_month_count_10[[2]], outcome_month_count_11[[2]], outcome_month_count_12[[2]])
+
+percent_euthanized <- 100 * euthanasia_month_count/outcome_month_count
+
+#merge into data frame and then plot
+df <- data.frame(years, intake_month_count, euthanasia_month_count, outcome_month_count, percent_euthanized)
+names(df) <- c("year", "intake_month_count","euthanasia_mont_count", "outcome_month_count", "percent_euthanized" )
+```
+
+```{r fig.width = 6, fig.height = 4}
+ggplot(df[-c(27, 26),]) +
+  geom_point(aes(x = intake_month_count, y = percent_euthanized)) +
+  geom_abline(slope = 0.031, intercept = -4.19) + 
+  labs(title = "Monthly Euthanasia Rates", y = "Percent", x = "Number of Animals Entering Shelters", caption = "Figure 5 plots monthly euthanasia percentage against the monthly number of intakes. The sloped line \nrepresents the linear model (line of best fit).") +
+  theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+```
+
+```{r}
+#linear model
+model <- lm(percent_euthanized~intake_month_count, data = df[-c(27, 26),])
+summary(model)
+par(mfrow=c(2, 2))
+plot(model)
+#non normality because poitns 27 and 26 are close are outliers (standardized residuals greater than 3), due to relatively small number of months, we will accept our model even though it slightly violates normality of standardized residuals, satisfies heterodacity and residuals have no pattern
+```
+
+From the summary statistics and summary plots, we can see that monthly intake is a very significant predictor for monthly euthanasia rate and that our model satisfies the assumptions of linear regression. The residuals are centered about 0 and remain flat, there are no bad leverage points, and the variance is constant (homoscedasticity). While the standardized residuals stray slightly from a normal, our linear model was created from only 34 data points (36 months in 3 years minus 2 bad leverage points) so we will overlook this deviation.
+
+Thus, we conclude that as the intake rate increases, so too does the euthanasia percentage. In fact the linear model, $percent euthanized = -4.1876 + 0.0306 * Intake$, suggests that for every 100 additional intakes, the monthly euthanasia rate increases by 3%. Considering that the peak months have intakes several hundred higher than the non-peak months, dog owners should try to surrender their dogs during the latter period. In fact, the the euthanasia percentages during winter and spring are roughly half of those during summer and early autumn.
+
+###Euthanasia Rates by Shelter and Map of Shelters
+
+Another variable that can greatly affect the likelihood of adoption is the shelter to which you decide to surrender your dog. The following table summarizes the rates of adoption at each of the shelters in LA. It's evident that the adoption rates are very different at each shelter. Of course we can conduct a chi-square test to check our observation but from our previous two chi-square tests, we know that such a large discrepancy in rates cannot be simply due to chance. 
+
+```{r}
+#create function to look up euthanasia rate for a shelter
+adoption_rate_shelter <- function(shelter_name){
+  z <- subset(filtered_data_owner_sur, filtered_data_owner_sur$Shelter == shelter_name)
+  return(sum(z$Outcome == "ADOPTION")/length(z$Outcome) * 100)
+}
+
+adoption_rates_all_shelters <- c(adoption_rate_shelter("HARBOR"), adoption_rate_shelter("E VALLEY"), adoption_rate_shelter("S LA"), adoption_rate_shelter("N CENTRA"), adoption_rate_shelter("W LA"), adoption_rate_shelter("W VALLEY"))
+shelter_names <- c("Harbor", "East Valley", "South LA", "North Central", "West LA", "West Valley")
+zips <- c(90731, 91405, 90047, 90031, 90064, 91311)
+longitude <- c(-118.29, -118.45,-118.311, -118.219, -118.440, -118.603)
+latitude <- c(33.75, 34.19,33.985, 34.0836, 34.035, 34.293)
+
+shelter_euthanasia_rates <- data.frame(shelter_names, adoption_rates_all_shelters, zips, latitude, longitude)
+
+#table
+table_shelter_rates <- data.frame(shelter_names, paste(sprintf("%.1f", round(adoption_rates_all_shelters, 1)), "%"))[order(adoption_rates_all_shelters),]
+rownames(table_shelter_rates) <- NULL
+
+kable(table_shelter_rates, col.names = c("Shelter", "Adoption Rate"), caption = "Table 2 Adoption Rate by Shelter")
+```
+
+From Table 2, it's clear that travelling to the West LA shelter can greatly improve your dog's chances of adoption. In addition, if your local shelter is South LA, North Central, or East Valley, you should seriously consider travelling the extra distance to surrender your companion to more promising shelters such as West Valley and West LA. To make it easier to decide which shelter you want to surrender your dog to, we have created an interactive map with the locations of each of the shelters along with their adoption rates. For instance, if you live in the Inglewood area, you are roughly equidistant from the West La and South LA shelter and should consider taking your pet to the West LA shelter because it has a much higher adoption rate.
+
+```{r}
+#map
+shelter_euthanasia_rates <- mutate(shelter_euthanasia_rates, popup = paste(shelter_names, 
+                                                                           "<br>", 
+                                                                           "Adoption Rate: ",
+                                                                           sprintf("%.1f", round(adoption_rates_all_shelters, 1)),
+                                                                           "%"))
+```
+
+
+```{r}
+leaflet(shelter_euthanasia_rates) %>% 
+  addTiles() %>% 
+  addMarkers(lng = ~longitude, lat = ~latitude, popup = ~popup)
+
+
+```
+
+#Conclusion
+
+Through our analysis of LA shelter data, we have identified several trends that can help dog owners increase the likelihood of adoption for their dogs. First, we have seen that of the most popular breeds in the shelters, the larger breeds have a much lower chance of adoption than the smaller breeds. If your dog belongs to one of the bottom breeds in Figure 3, you should consider alternative methods of giving away your pet, such as online listings. In addition, we have found that the time of year when you surrender your dog plays a large role in its adoption rate. Due to the large number of dogs entering shelters during the summer and early autumn months, shelters are forced to euthanize more dogs. Thus, by surrendering your dog during non-preak months, you can half its chances of being euthanized. Finally, we have discovered that the different shelters in LA have drastically different adoption rates. In order to increase the likelihood of adoption for their dogs, owners should try to surrender their furry friends to West LA or West Valley and avoid South LA and North Central. The map in the previous section can also help dog owners locate the shelters in the LA region along with their respective adoption rates.
+
+We understand that parting ways with your companion is a very difficult decision. Hopefully, the patterns and advice offered in this report can improve your dog's chances of adoption and make parting ways less distressing.
