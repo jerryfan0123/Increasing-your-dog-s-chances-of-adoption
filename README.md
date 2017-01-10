@@ -1,2 +1,2 @@
 # Increasing-your-dog-s-chances-of-adoption
-adgsasdgasdgasdgasg
+This data project aims to analyze LA shelter data to find patterns that can help dog owners who are looking to surrender their pets. The original data was collected by animal shelters in LA from mid 2009 to mid 2013. The first file (.rda) contains the raw data. The second file (.rmd) is the markdown document containing the code for the report. The final file (.html) is the actual report.
